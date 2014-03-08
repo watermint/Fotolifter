@@ -5,6 +5,7 @@ import scala.sys.process._
 import java.io.{FileWriter, BufferedWriter, File}
 import java.nio.file.{Files, Path, Paths}
 import java.util.UUID
+import scala.collection.parallel.ForkJoinTaskSupport
 
 case class Line(line: String) {
   val path: Path = Paths.get(line)
@@ -106,7 +107,7 @@ case class ConvertTask(line: String,
 
   override def execute(): Unit = {
     val cmd = command()
-    println(cmd)
+    println(s"Executing... ${cmd.mkString(" ")}")
     cmd
       .!!
   }
@@ -119,13 +120,23 @@ case class Lifter(journal: Path,
   val journalWriter = new BufferedWriter(new FileWriter(journal.toFile, true))
 
   def lift(): Unit = {
-    Source.fromFile(source.toFile)
-      .getLines()
+    val sourceLines = Source.fromFile(source.toFile).getLines().toList
+
+    val lines = if (Files.exists(journal)) {
+      val journalLines = Source.fromFile(journal.toFile).getLines().toList
+      sourceLines.par.filterNot(journalLines.contains)
+    } else {
+      sourceLines
+    }
+
+    val tasks = lines
       .map(Line)
       .map(l => l.defineTask(destination))
       .toList
       .par
-      .foreach {
+
+    tasks.tasksupport = new ForkJoinTaskSupport(new scala.concurrent.forkjoin.ForkJoinPool(2))
+    tasks.foreach {
       l =>
         try {
           l.execute()
@@ -135,6 +146,7 @@ case class Lifter(journal: Path,
             e.printStackTrace()
         }
     }
+    journalWriter.flush()
   }
 }
 
